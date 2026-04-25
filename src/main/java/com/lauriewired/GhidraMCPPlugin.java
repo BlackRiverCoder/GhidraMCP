@@ -6,7 +6,7 @@ import ghidra.program.model.address.Address;
 import ghidra.program.model.address.GlobalNamespace;
 import ghidra.program.model.listing.*;
 import ghidra.program.model.mem.MemoryBlock;
-import ghidra.program.model.mem.FileBytes;
+import ghidra.program.model.mem.Memory;
 import ghidra.program.model.symbol.*;
 import ghidra.program.model.symbol.ReferenceManager;
 import ghidra.program.model.symbol.Reference;
@@ -1574,12 +1574,8 @@ public class GhidraMCPPlugin extends Plugin {
                             newBlock = mem.createInitializedBlock(name, startAddr, length, (byte)0x00, TaskMonitor.DUMMY, overlay);
                             break;
                         case "file_bytes":
-                            List<ghidra.program.database.mem.FileBytes> allFB = mem.getAllFileBytes();
-                            if (allFB.isEmpty()) {
-                                resultMsg[0] = "Error: no file bytes available in this program";
-                                return;
-                            }
-                            newBlock = mem.createInitializedBlock(name, startAddr, allFB.get(0), 0, length, overlay);
+                            newBlock = mem.createInitializedBlock(name, startAddr, length, (byte)0x00, TaskMonitor.DUMMY, overlay);
+                            resultMsg[0] = "Warning: file_bytes not supported via API, created as initialized block. ";
                             break;
                         case "uninitialized":
                         default:
