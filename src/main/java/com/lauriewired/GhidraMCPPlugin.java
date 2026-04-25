@@ -64,6 +64,8 @@ import java.util.*;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+import generic.jar.ResourceFile;
+
 @PluginInfo(
     status = PluginStatus.RELEASED,
     packageName = ghidra.app.DeveloperPluginPackage.NAME,
@@ -1747,59 +1749,48 @@ public class GhidraMCPPlugin extends Plugin {
             Program program = getCurrentProgram();
             if (program == null) return "Error: no program loaded";
 
+            // Wrap java.io.File do ResourceFile
+            generic.jar.ResourceFile resourceFile = new generic.jar.ResourceFile(scriptFile);
+
             final StringBuilder output = new StringBuilder();
             final AtomicBoolean success = new AtomicBoolean(false);
 
             SwingUtilities.invokeAndWait(() -> {
                 try {
-                    // Load and run script via GhidraScriptUtil
-                    ghidra.app.script.GhidraScriptProvider provider =
-                        ghidra.app.script.GhidraScriptUtil.getProvider(scriptFile);
-
+                    GhidraScriptProvider provider = GhidraScriptUtil.getProvider(resourceFile);
                     if (provider == null) {
-                        output.append("Error: no script provider found for " + name);
+                        output.append("Error: no script provider found for ").append(name);
                         return;
                     }
 
-                    java.io.PrintWriter writer = new java.io.PrintWriter(
-                        new java.io.StringWriter()) {
-                        @Override public void println(String x) { output.append(x).append("\n"); }
-                        @Override public void print(String x)   { output.append(x); }
-                    };
+                    java.io.StringWriter sw = new java.io.StringWriter();
+                    java.io.PrintWriter writer = new java.io.PrintWriter(sw);
 
-                    ghidra.app.script.GhidraScript script = provider.getScriptInstance(
-                        scriptFile, writer);
+                    GhidraScript script = provider.getScriptInstance(resourceFile, writer);
 
-                    // Set up script state
-                    ghidra.framework.plugintool.PluginTool scriptTool = tool;
-                    ghidra.app.plugin.core.script.GhidraScriptMgrPlugin scriptMgr =
-                        tool.getService(ghidra.app.plugin.core.script.GhidraScriptMgrPlugin.class);
-
-                    script.set(
-                        new ghidra.app.script.GhidraState(
-                            tool,
-                            tool.getProject(),
-                            program,
-                            getCurrentLocationFromTool(),
-                            null,
-                            null
-                        ),
-                        new ConsoleTaskMonitor(),
-                        writer
+                    GhidraState state = new GhidraState(
+                        tool,
+                        tool.getProject(),
+                        program,
+                        getCurrentLocationFromTool(),
+                        null,
+                        null
                     );
 
-                    // Parse args
-                    String[] argArray = (args != null && !args.isEmpty()) 
+                    String[] argArray = (args != null && !args.isEmpty())
                         ? args.split(" ") : new String[0];
                     script.setScriptArgs(argArray);
 
                     int tx = program.startTransaction("Run script: " + name);
                     try {
-                        script.execute();
+                        script.execute(state, new ConsoleTaskMonitor(), writer);
                         success.set(true);
                     } finally {
                         program.endTransaction(tx, success.get());
                     }
+
+                    writer.flush();
+                    output.append(sw.toString());
 
                 } catch (Exception e) {
                     output.append("Error running script: ").append(e.getMessage());
@@ -1808,9 +1799,9 @@ public class GhidraMCPPlugin extends Plugin {
             });
 
             String result = output.toString();
-            return (result.isEmpty() ? "Script completed with no output" : result);
+            return result.isEmpty() ? "Script completed with no output" : result;
 
-        } catch (Exception e) {
+        } catch (InterruptedException | InvocationTargetException e) {
             return "Error: " + e.getMessage();
         }
     }
