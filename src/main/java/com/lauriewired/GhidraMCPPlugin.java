@@ -28,8 +28,6 @@ import ghidra.app.script.GhidraScript;
 import ghidra.app.script.GhidraScriptProvider;
 import ghidra.app.script.GhidraScriptUtil;
 import ghidra.app.script.GhidraState;
-import ghidra.app.services.AutoAnalysisManager;
-import ghidra.app.services.Analyzer;
 import ghidra.program.model.symbol.SourceType;
 import ghidra.program.model.listing.LocalVariableImpl;
 import ghidra.program.model.listing.ParameterImpl;
@@ -51,6 +49,9 @@ import ghidra.program.model.listing.Variable;
 import ghidra.app.decompiler.component.DecompilerUtils;
 import ghidra.app.decompiler.ClangToken;
 import ghidra.framework.options.Options;
+
+import ghidra.app.services.Analyzer;
+import ghidra.program.model.listing.Program;
 
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
@@ -1849,8 +1850,8 @@ public class GhidraMCPPlugin extends Plugin {
             SwingUtilities.invokeAndWait(() -> {
                 int tx = program.startTransaction("Auto analysis");
                 try {
-                    ghidra.app.services.AutoAnalysisManager mgr =
-                        ghidra.app.services.AutoAnalysisManager.getAnalysisManager(program);
+                    ghidra.app.plugin.core.analysis.AutoAnalysisManager mgr =
+                        ghidra.app.plugin.core.analysis.AutoAnalysisManager.getAnalysisManager(program);
                     mgr.initializeOptions();
                     mgr.startAnalysis(new ConsoleTaskMonitor());
                     success.set(true);
@@ -1873,15 +1874,15 @@ public class GhidraMCPPlugin extends Plugin {
         if (program == null) return "Error: no program loaded";
 
         try {
-            ghidra.app.services.AutoAnalysisManager mgr =
-                ghidra.app.services.AutoAnalysisManager.getAnalysisManager(program);
+            ghidra.app.plugin.core.analysis.AutoAnalysisManager mgr =
+                ghidra.app.plugin.core.analysis.AutoAnalysisManager.getAnalysisManager(program);
 
             List<String> lines = new ArrayList<>();
-            for (ghidra.app.plugin.core.analysis.AutoAnalysisManager.AnalyzerScheduler scheduler 
-                    : mgr.getAnalyzerSchedulers()) {
-                ghidra.app.services.Analyzer analyzer = scheduler.getAnalyzer();
+            for (ghidra.app.services.Analyzer analyzer : mgr.getAnalyzers()) {
+                boolean enabled = mgr.getAnalysisOptions(program.getOptions(Program.ANALYSIS_PROPERTIES))
+                    .getBoolean(analyzer.getName(), analyzer.getDefaultEnablement(program));
                 lines.add(String.format("[%s] %s  (%s)",
-                    scheduler.isEnabled() ? "ON " : "OFF",
+                    enabled ? "ON " : "OFF",
                     analyzer.getName(),
                     analyzer.getAnalysisType().name()));
             }
@@ -1897,20 +1898,14 @@ public class GhidraMCPPlugin extends Plugin {
         if (program == null) return "Error: no program loaded";
         if (analyzersJson == null) return "Error: analyzers list required";
 
-        // Parse JSON array
-        analyzersJson = analyzersJson.trim();
-        if (analyzersJson.startsWith("[")) {
-            analyzersJson = analyzersJson.substring(1);
-        }
-        if (analyzersJson.endsWith("]")) {
-            analyzersJson = analyzersJson.substring(0, analyzersJson.length() - 1);
-        }
+        // Parse JSON array jednoducho
+        analyzersJson = analyzersJson.trim()
+            .replaceAll("^\\[|\\]$", "");
         List<String> requestedNames = new ArrayList<>();
         for (String part : analyzersJson.split(",")) {
             String name = part.trim().replaceAll("^\"|\"$", "");
             if (!name.isEmpty()) requestedNames.add(name);
         }
-
         if (requestedNames.isEmpty()) return "Error: no analyzer names provided";
 
         final StringBuilder output = new StringBuilder();
@@ -1921,29 +1916,31 @@ public class GhidraMCPPlugin extends Plugin {
             SwingUtilities.invokeAndWait(() -> {
                 int tx = program.startTransaction("Run specific analyzers");
                 try {
-                    ghidra.app.services.AutoAnalysisManager mgr =
-                        ghidra.app.services.AutoAnalysisManager.getAnalysisManager(program);
+                    ghidra.app.plugin.core.analysis.AutoAnalysisManager mgr =
+                        ghidra.app.plugin.core.analysis.AutoAnalysisManager.getAnalysisManager(program);
+
+                    ghidra.framework.options.Options analysisOptions =
+                        program.getOptions(Program.ANALYSIS_PROPERTIES);
 
                     List<String> ran = new ArrayList<>();
-                    List<String> notFound = new ArrayList<>();
+                    List<String> notFound = new ArrayList<>(requested);
 
-                    for (ghidra.app.plugin.core.analysis.AutoAnalysisManager.AnalyzerScheduler scheduler
-                            : mgr.getAnalyzerSchedulers()) {
-                        ghidra.app.services.Analyzer analyzer = scheduler.getAnalyzer();
+                    for (ghidra.app.services.Analyzer analyzer : mgr.getAnalyzers()) {
                         if (requested.contains(analyzer.getName())) {
-                            scheduler.setEnabled(true);
+                            // Enableni konkrétny analyzer
+                            analysisOptions.setBoolean(analyzer.getName(), true);
                             ran.add(analyzer.getName());
+                            notFound.remove(analyzer.getName());
+                        } else {
+                            // Vypni ostatné aby sme spustili len vybrané
+                            analysisOptions.setBoolean(analyzer.getName(), false);
                         }
-                    }
-
-                    for (String name : requested) {
-                        if (!ran.contains(name)) notFound.add(name);
                     }
 
                     mgr.startAnalysis(new ConsoleTaskMonitor());
                     success.set(true);
 
-                    output.append("OK: started analyzers: ").append(String.join(", ", ran));
+                    output.append("OK: ran analyzers: ").append(String.join(", ", ran));
                     if (!notFound.isEmpty()) {
                         output.append("\nNot found: ").append(String.join(", ", notFound));
                     }
