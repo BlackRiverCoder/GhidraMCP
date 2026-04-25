@@ -6,6 +6,7 @@ import ghidra.program.model.address.Address;
 import ghidra.program.model.address.GlobalNamespace;
 import ghidra.program.model.listing.*;
 import ghidra.program.model.mem.MemoryBlock;
+import ghidra.program.model.mem.FileBytes;
 import ghidra.program.model.symbol.*;
 import ghidra.program.model.symbol.ReferenceManager;
 import ghidra.program.model.symbol.Reference;
@@ -56,6 +57,7 @@ import java.net.InetSocketAddress;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 @PluginInfo(
@@ -339,6 +341,59 @@ public class GhidraMCPPlugin extends Plugin {
             int limit = parseIntOrDefault(qparams.get("limit"), 100);
             String filter = qparams.get("filter");
             sendResponse(exchange, listDefinedStrings(offset, limit, filter));
+        });
+
+        server.createContext("/list_memory_blocks", exchange -> {
+            Map<String, String> qparams = parseQueryParams(exchange);
+            int offset = parseIntOrDefault(qparams.get("offset"), 0);
+            int limit  = parseIntOrDefault(qparams.get("limit"),  100);
+            sendResponse(exchange, listMemoryBlocks(offset, limit));
+        });
+
+        server.createContext("/rename_memory_block", exchange -> {
+            Map<String, String> params = parsePostParams(exchange);
+            String blockName = params.get("blockName");
+            String newName   = params.get("newName");
+            sendResponse(exchange, renameMemoryBlock(blockName, newName));
+        });
+
+        server.createContext("/set_memory_block_start", exchange -> {
+            Map<String, String> params = parsePostParams(exchange);
+            sendResponse(exchange, setMemoryBlockStart(params.get("blockName"), params.get("newStart")));
+        });
+
+        server.createContext("/add_memory_block", exchange -> {
+            Map<String, String> params = parsePostParams(exchange);
+            String name      = params.get("name");
+            String startStr  = params.get("start");
+            String lengthStr = params.get("length");
+            boolean read      = Boolean.parseBoolean(params.getOrDefault("read",       "true"));
+            boolean write     = Boolean.parseBoolean(params.getOrDefault("write",      "true"));
+            boolean execute   = Boolean.parseBoolean(params.getOrDefault("execute",    "false"));
+            boolean vol       = Boolean.parseBoolean(params.getOrDefault("volatile",   "false"));
+            boolean artificial= Boolean.parseBoolean(params.getOrDefault("artificial", "false"));
+            boolean overlay   = Boolean.parseBoolean(params.getOrDefault("overlay",    "false"));
+            String blockType  = params.getOrDefault("blockType", "uninitialized");
+            String comment    = params.getOrDefault("comment", "");
+            sendResponse(exchange, addMemoryBlock(name, startStr, lengthStr, read, write, execute, vol, artificial, overlay, blockType, comment));
+        });
+
+        server.createContext("/delete_memory_block", exchange -> {
+            Map<String, String> params = parsePostParams(exchange);
+            sendResponse(exchange, deleteMemoryBlock(params.get("blockName")));
+        });
+
+        server.createContext("/set_memory_block_permissions", exchange -> {
+            Map<String, String> params = parsePostParams(exchange);
+            boolean read    = Boolean.parseBoolean(params.get("read"));
+            boolean write   = Boolean.parseBoolean(params.get("write"));
+            boolean execute = Boolean.parseBoolean(params.get("execute"));
+            sendResponse(exchange, setMemoryBlockPermissions(params.get("blockName"), read, write, execute));
+        });
+
+        server.createContext("/rebase_program", exchange -> {
+            Map<String, String> params = parsePostParams(exchange);
+            sendResponse(exchange, rebaseProgram(params.get("newBase")));
         });
 
         server.setExecutor(null);
@@ -1352,9 +1407,9 @@ public class GhidraMCPPlugin extends Plugin {
         }
     }
 
-/**
- * List all defined strings in the program with their addresses
- */
+    /**
+     * List all defined strings in the program with their addresses
+     */
     private String listDefinedStrings(int offset, int limit, String filter) {
         Program program = getCurrentProgram();
         if (program == null) return "No program loaded";
@@ -1411,6 +1466,233 @@ public class GhidraMCPPlugin extends Plugin {
             }
         }
         return sb.toString();
+    }
+
+    /**
+     * CUSTOM JER METHODS
+     */
+    private String listMemoryBlocks(int offset, int limit) {
+        Program program = getCurrentProgram();
+        if (program == null) return "No program loaded";
+
+        List<String> lines = new ArrayList<>();
+        for (MemoryBlock b : program.getMemory().getBlocks()) {
+            lines.add(String.format("%-20s start=0x%08X end=0x%08X size=0x%X r=%b w=%b x=%b volatile=%b type=%s",
+                b.getName(),
+                b.getStart().getOffset(),
+                b.getEnd().getOffset(),
+                b.getSize(),
+                b.isRead(), b.isWrite(), b.isExecute(), b.isVolatile(),
+                b.getType().name()));
+        }
+        return paginateList(lines, offset, limit);
+    }
+
+    private String renameMemoryBlock(String blockName, String newName) {
+        Program program = getCurrentProgram();
+        if (program == null) return "No program loaded";
+        if (blockName == null || newName == null) return "Error: blockName and newName required";
+
+        MemoryBlock block = program.getMemory().getBlock(blockName);
+        if (block == null) return "Error: block '" + blockName + "' not found";
+
+        AtomicBoolean success = new AtomicBoolean(false);
+        try {
+            SwingUtilities.invokeAndWait(() -> {
+                int tx = program.startTransaction("Rename memory block");
+                try {
+                    block.setName(newName);
+                    success.set(true);
+                } catch (Exception e) {
+                    Msg.error(this, "Error renaming memory block", e);
+                } finally {
+                    program.endTransaction(tx, success.get());
+                }
+            });
+        } catch (InterruptedException | InvocationTargetException e) {
+            return "Error: " + e.getMessage();
+        }
+        return success.get() ? "OK: renamed '" + blockName + "' to '" + newName + "'" : "Failed to rename block";
+    }
+
+    private String setMemoryBlockStart(String blockName, String newStartStr) {
+        Program program = getCurrentProgram();
+        if (program == null) return "No program loaded";
+        if (blockName == null || newStartStr == null) return "Error: blockName and newStart required";
+
+        MemoryBlock block = program.getMemory().getBlock(blockName);
+        if (block == null) return "Error: block '" + blockName + "' not found";
+
+        try {
+            long newOffset = Long.decode(newStartStr);
+            Address newAddr = program.getAddressFactory().getDefaultAddressSpace().getAddress(newOffset);
+
+            AtomicBoolean success = new AtomicBoolean(false);
+            SwingUtilities.invokeAndWait(() -> {
+                int tx = program.startTransaction("Move memory block");
+                try {
+                    program.getMemory().moveBlock(block, newAddr, TaskMonitor.DUMMY);
+                    success.set(true);
+                } catch (Exception e) {
+                    Msg.error(this, "Error moving memory block", e);
+                } finally {
+                    program.endTransaction(tx, success.get());
+                }
+            });
+            return success.get() ? "OK: moved '" + blockName + "' to " + newStartStr : "Failed to move block";
+        } catch (NumberFormatException e) {
+            return "Error: invalid address format '" + newStartStr + "'";
+        } catch (InterruptedException | InvocationTargetException e) {
+            return "Error: " + e.getMessage();
+        }
+    }
+
+    private String addMemoryBlock(String name, String startStr, String lengthStr,
+            boolean read, boolean write, boolean execute,
+            boolean vol, boolean artificial, boolean overlay,
+            String blockType, String comment) {
+        Program program = getCurrentProgram();
+        if (program == null) return "No program loaded";
+        if (name == null || name.isEmpty()) return "Error: name is required";
+        if (startStr == null || lengthStr == null) return "Error: start and length are required";
+
+        try {
+            long startOff = Long.decode(startStr);
+            long length   = Long.decode(lengthStr);
+            Address startAddr = program.getAddressFactory().getDefaultAddressSpace().getAddress(startOff);
+
+            AtomicBoolean success = new AtomicBoolean(false);
+            final String[] resultMsg = {""};
+
+            SwingUtilities.invokeAndWait(() -> {
+                int tx = program.startTransaction("Add memory block");
+                try {
+                    Memory mem = program.getMemory();
+                    MemoryBlock newBlock;
+                    switch (blockType.toLowerCase()) {
+                        case "initialized":
+                            newBlock = mem.createInitializedBlock(name, startAddr, length, (byte)0x00, TaskMonitor.DUMMY, overlay);
+                            break;
+                        case "file_bytes":
+                            List<ghidra.program.database.mem.FileBytes> allFB = mem.getAllFileBytes();
+                            if (allFB.isEmpty()) {
+                                resultMsg[0] = "Error: no file bytes available in this program";
+                                return;
+                            }
+                            newBlock = mem.createInitializedBlock(name, startAddr, allFB.get(0), 0, length, overlay);
+                            break;
+                        case "uninitialized":
+                        default:
+                            newBlock = mem.createUninitializedBlock(name, startAddr, length, overlay);
+                            break;
+                    }
+                    newBlock.setRead(read);
+                    newBlock.setWrite(write);
+                    newBlock.setExecute(execute);
+                    newBlock.setVolatile(vol);
+                    newBlock.setArtificial(artificial);
+                    if (!comment.isEmpty()) newBlock.setComment(comment);
+                    success.set(true);
+                    resultMsg[0] = String.format("OK: created %s block '%s' at %s length=%s r=%b w=%b x=%b volatile=%b overlay=%b",
+                        blockType, name, startStr, lengthStr, read, write, execute, vol, overlay);
+                } catch (Exception e) {
+                    resultMsg[0] = "Error: " + e.getMessage();
+                    Msg.error(this, "Error adding memory block", e);
+                } finally {
+                    program.endTransaction(tx, success.get());
+                }
+            });
+            return resultMsg[0];
+        } catch (NumberFormatException e) {
+            return "Error: invalid number format in start/length";
+        } catch (InterruptedException | InvocationTargetException e) {
+            return "Error: " + e.getMessage();
+        }
+    }
+
+    private String deleteMemoryBlock(String blockName) {
+        Program program = getCurrentProgram();
+        if (program == null) return "No program loaded";
+        if (blockName == null) return "Error: blockName required";
+
+        MemoryBlock block = program.getMemory().getBlock(blockName);
+        if (block == null) return "Error: block '" + blockName + "' not found";
+
+        AtomicBoolean success = new AtomicBoolean(false);
+        try {
+            SwingUtilities.invokeAndWait(() -> {
+                int tx = program.startTransaction("Delete memory block");
+                try {
+                    program.getMemory().removeBlock(block, TaskMonitor.DUMMY);
+                    success.set(true);
+                } catch (Exception e) {
+                    Msg.error(this, "Error deleting memory block", e);
+                } finally {
+                    program.endTransaction(tx, success.get());
+                }
+            });
+        } catch (InterruptedException | InvocationTargetException e) {
+            return "Error: " + e.getMessage();
+        }
+        return success.get() ? "OK: deleted block '" + blockName + "'" : "Failed to delete block";
+    }
+
+    private String setMemoryBlockPermissions(String blockName, boolean read, boolean write, boolean execute) {
+        Program program = getCurrentProgram();
+        if (program == null) return "No program loaded";
+        if (blockName == null) return "Error: blockName required";
+
+        MemoryBlock block = program.getMemory().getBlock(blockName);
+        if (block == null) return "Error: block '" + blockName + "' not found";
+
+        AtomicBoolean success = new AtomicBoolean(false);
+        try {
+            SwingUtilities.invokeAndWait(() -> {
+                int tx = program.startTransaction("Set memory block permissions");
+                try {
+                    block.setRead(read);
+                    block.setWrite(write);
+                    block.setExecute(execute);
+                    success.set(true);
+                } catch (Exception e) {
+                    Msg.error(this, "Error setting permissions", e);
+                } finally {
+                    program.endTransaction(tx, success.get());
+                }
+            });
+        } catch (InterruptedException | InvocationTargetException e) {
+            return "Error: " + e.getMessage();
+        }
+        return success.get() ? "OK: r=" + read + " w=" + write + " x=" + execute : "Failed to set permissions";
+    }
+
+    private String rebaseProgram(String newBaseStr) {
+        Program program = getCurrentProgram();
+        if (program == null) return "No program loaded";
+        if (newBaseStr == null) return "Error: newBase required";
+
+        try {
+            long newBase = Long.decode(newBaseStr);
+            Address newAddr = program.getAddressFactory().getDefaultAddressSpace().getAddress(newBase);
+
+            AtomicBoolean success = new AtomicBoolean(false);
+            SwingUtilities.invokeAndWait(() -> {
+                int tx = program.startTransaction("Rebase program");
+                try {
+                    program.setImageBase(newAddr, true);
+                    success.set(true);
+                } catch (Exception e) {
+                    Msg.error(this, "Error rebasing program", e);
+                } finally {
+                    program.endTransaction(tx, success.get());
+                }
+            });
+            return success.get() ? "OK: rebased to " + newBaseStr : "Failed to rebase";
+        } catch (NumberFormatException e) {
+            return "Error: invalid address '" + newBaseStr + "'";
+        } catch (InterruptedException | InvocationTargetException e) {
+            return "Error: " + e.getMessage();
+        }
     }
 
     /**

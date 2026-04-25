@@ -287,6 +287,124 @@ def list_strings(offset: int = 0, limit: int = 2000, filter: str = None) -> list
         params["filter"] = filter
     return safe_get("strings", params)
 
+@mcp.tool()
+def list_memory_blocks(offset: int = 0, limit: int = 100) -> list:
+    """
+    List all memory blocks/segments with full details (name, start, end, size, permissions, type).
+    """
+    return safe_get("list_memory_blocks", {"offset": offset, "limit": limit})
+
+@mcp.tool()
+def set_memory_block_start(block_name: str, new_start_address: str) -> str:
+    """
+    Rebase/move a memory block to a new start address.
+    Useful for firmware analysis where flash doesn't start at 0x0.
+    
+    Args:
+        block_name: Name of the memory block (e.g. "ram", "FLASH", ".text")
+        new_start_address: New base address in hex (e.g. "0x08000000")
+    """
+    return safe_post("set_memory_block_start", {"blockName": block_name, "newStart": new_start_address})
+
+@mcp.tool()
+def rename_memory_block(block_name: str, new_name: str) -> str:
+    """
+    Rename a memory block/segment.
+    
+    Args:
+        block_name: Current name of the memory block
+        new_name: New name for the block (e.g. "FLASH", "RAM", "EEPROM")
+    """
+    return safe_post("rename_memory_block", {"blockName": block_name, "newName": new_name})
+
+@mcp.tool()
+def add_memory_block(
+    name: str,
+    start_address: str,
+    length: str,
+    read: bool = True,
+    write: bool = True,
+    execute: bool = False,
+    volatile: bool = False,
+    artificial: bool = False,
+    overlay: bool = False,
+    block_type: str = "uninitialized",
+    comment: str = ""
+) -> str:
+    """
+    Create a new memory block — all options as seen in Ghidra's Add Memory Block dialog.
+
+    Args:
+        name: Block name (e.g. "SRAM", "PERIPH", "FLASH2")
+        start_address: Start address in hex (e.g. "0x20000000")
+        length: Length in hex or decimal (e.g. "0x8000")
+        read: Read permission (default True)
+        write: Write permission (default True)
+        execute: Execute permission (default False)
+        volatile: Mark as volatile — for memory-mapped peripheral registers (default False)
+        artificial: Mark as artificial/internal Ghidra block (default False)
+        overlay: Create as overlay block (default False)
+        block_type: "uninitialized" | "initialized" | "file_bytes"
+                    uninitialized = empty block, no data
+                    initialized   = zeroed initialized block
+                    file_bytes    = mapped from the loaded binary file
+        comment: Optional comment/description
+    """
+    return safe_post("add_memory_block", {
+        "name": name,
+        "start": start_address,
+        "length": length,
+        "read": str(read).lower(),
+        "write": str(write).lower(),
+        "execute": str(execute).lower(),
+        "volatile": str(volatile).lower(),
+        "artificial": str(artificial).lower(),
+        "overlay": str(overlay).lower(),
+        "blockType": block_type,
+        "comment": comment
+    })
+
+@mcp.tool()
+def delete_memory_block(block_name: str) -> str:
+    """
+    Delete a memory block by name.
+    WARNING: This removes the block and all its contents from the analysis.
+    
+    Args:
+        block_name: Name of the memory block to delete
+    """
+    return safe_post("delete_memory_block", {"blockName": block_name})
+
+@mcp.tool()
+def set_memory_block_permissions(block_name: str, read: bool, write: bool, execute: bool) -> str:
+    """
+    Set read/write/execute permissions on a memory block.
+    
+    Args:
+        block_name: Name of the memory block
+        read: Allow read access
+        write: Allow write access
+        execute: Allow execute access
+    """
+    return safe_post("set_memory_block_permissions", {
+        "blockName": block_name,
+        "read": str(read),
+        "write": str(write),
+        "execute": str(execute)
+    })
+
+@mcp.tool()
+def rebase_program(new_image_base: str) -> str:
+    """
+    Rebase the entire program to a new image base address.
+    This moves ALL memory blocks proportionally — useful when the entire
+    firmware image needs to be relocated (e.g. from 0x0 to 0x08000000).
+    
+    Args:
+        new_image_base: New base address in hex (e.g. "0x08000000")
+    """
+    return safe_post("rebase_program", {"newBase": new_image_base})
+
 def main():
     parser = argparse.ArgumentParser(description="MCP server for Ghidra")
     parser.add_argument("--ghidra-server", type=str, default=DEFAULT_GHIDRA_SERVER,
