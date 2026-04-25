@@ -50,7 +50,6 @@ import ghidra.app.decompiler.component.DecompilerUtils;
 import ghidra.app.decompiler.ClangToken;
 import ghidra.framework.options.Options;
 
-import ghidra.app.services.Analyzer;
 import ghidra.program.model.listing.Program;
 
 import com.sun.net.httpserver.HttpExchange;
@@ -1874,17 +1873,18 @@ public class GhidraMCPPlugin extends Plugin {
         if (program == null) return "Error: no program loaded";
 
         try {
-            ghidra.app.plugin.core.analysis.AutoAnalysisManager mgr =
-                ghidra.app.plugin.core.analysis.AutoAnalysisManager.getAnalysisManager(program);
-
+            ghidra.framework.options.Options opts = 
+                program.getOptions(Program.ANALYSIS_PROPERTIES);
+            
             List<String> lines = new ArrayList<>();
-            for (ghidra.app.services.Analyzer analyzer : mgr.getAnalyzers()) {
-                boolean enabled = mgr.getAnalysisOptions(program.getOptions(Program.ANALYSIS_PROPERTIES))
-                    .getBoolean(analyzer.getName(), analyzer.getDefaultEnablement(program));
-                lines.add(String.format("[%s] %s  (%s)",
-                    enabled ? "ON " : "OFF",
-                    analyzer.getName(),
-                    analyzer.getAnalysisType().name()));
+            for (String name : opts.getOptionNames()) {
+                try {
+                    Object val = opts.getObject(name, null);
+                    lines.add(String.format("[%s] %s", 
+                        Boolean.TRUE.equals(val) ? "ON " : "OFF", name));
+                } catch (Exception e) {
+                    lines.add(String.format("[???] %s", name));
+                }
             }
             Collections.sort(lines);
             return String.join("\n", lines);
@@ -1898,9 +1898,7 @@ public class GhidraMCPPlugin extends Plugin {
         if (program == null) return "Error: no program loaded";
         if (analyzersJson == null) return "Error: analyzers list required";
 
-        // Parse JSON array jednoducho
-        analyzersJson = analyzersJson.trim()
-            .replaceAll("^\\[|\\]$", "");
+        analyzersJson = analyzersJson.trim().replaceAll("^\\[|\\]$", "");
         List<String> requestedNames = new ArrayList<>();
         for (String part : analyzersJson.split(",")) {
             String name = part.trim().replaceAll("^\"|\"$", "");
@@ -1916,31 +1914,34 @@ public class GhidraMCPPlugin extends Plugin {
             SwingUtilities.invokeAndWait(() -> {
                 int tx = program.startTransaction("Run specific analyzers");
                 try {
-                    ghidra.app.plugin.core.analysis.AutoAnalysisManager mgr =
-                        ghidra.app.plugin.core.analysis.AutoAnalysisManager.getAnalysisManager(program);
-
                     ghidra.framework.options.Options analysisOptions =
                         program.getOptions(Program.ANALYSIS_PROPERTIES);
 
-                    List<String> ran = new ArrayList<>();
-                    List<String> notFound = new ArrayList<>(requested);
+                    // Vypni všetky analyzery
+                    for (String name : analysisOptions.getOptionNames()) {
+                        try {
+                            analysisOptions.setBoolean(name, false);
+                        } catch (Exception ignored) {}
+                    }
 
-                    for (ghidra.app.services.Analyzer analyzer : mgr.getAnalyzers()) {
-                        if (requested.contains(analyzer.getName())) {
-                            // Enableni konkrétny analyzer
-                            analysisOptions.setBoolean(analyzer.getName(), true);
-                            ran.add(analyzer.getName());
-                            notFound.remove(analyzer.getName());
+                    // Zapni len požadované
+                    List<String> enabled = new ArrayList<>();
+                    List<String> notFound = new ArrayList<>();
+                    for (String name : requested) {
+                        if (analysisOptions.getOptionNames().contains(name)) {
+                            analysisOptions.setBoolean(name, true);
+                            enabled.add(name);
                         } else {
-                            // Vypni ostatné aby sme spustili len vybrané
-                            analysisOptions.setBoolean(analyzer.getName(), false);
+                            notFound.add(name);
                         }
                     }
 
+                    ghidra.app.plugin.core.analysis.AutoAnalysisManager mgr =
+                        ghidra.app.plugin.core.analysis.AutoAnalysisManager.getAnalysisManager(program);
                     mgr.startAnalysis(new ConsoleTaskMonitor());
                     success.set(true);
 
-                    output.append("OK: ran analyzers: ").append(String.join(", ", ran));
+                    output.append("OK: ran: ").append(String.join(", ", enabled));
                     if (!notFound.isEmpty()) {
                         output.append("\nNot found: ").append(String.join(", ", notFound));
                     }
