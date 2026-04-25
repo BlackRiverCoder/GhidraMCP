@@ -1783,7 +1783,8 @@ public class GhidraMCPPlugin extends Plugin {
 
                     int tx = program.startTransaction("Run script: " + name);
                     try {
-                        script.execute(state, new ConsoleTaskMonitor(), writer);
+                        script.set(state, new ConsoleTaskMonitor(), writer);
+                        script.run();
                         success.set(true);
                     } finally {
                         program.endTransaction(tx, success.get());
