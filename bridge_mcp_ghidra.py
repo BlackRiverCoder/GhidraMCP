@@ -443,6 +443,34 @@ def list_ghidra_scripts() -> list:
     """
     return safe_get("list_scripts")
 
+@mcp.tool()
+def run_auto_analysis() -> str:
+    """
+    Run Ghidra's full auto-analysis on the current program.
+    This will find functions, apply data types, resolve references, etc.
+    May take a while on large binaries.
+    """
+    return safe_post("run_auto_analysis", {})
+
+@mcp.tool()
+def list_analyzers() -> list:
+    """
+    List all available analyzers in Ghidra with their enabled/disabled state.
+    """
+    return safe_get("list_analyzers")
+
+@mcp.tool()
+def run_specific_analyzers(analyzer_names: list) -> str:
+    """
+    Run specific Ghidra analyzers by name.
+    Use list_analyzers() first to see available analyzer names.
+    
+    Args:
+        analyzer_names: List of analyzer names to run (e.g. ["Disassembler", "Function Start Search"])
+    """
+    import json
+    return safe_post("run_specific_analyzers", {"analyzers": json.dumps(analyzer_names)})
+
 def main():
     parser = argparse.ArgumentParser(description="MCP server for Ghidra")
     parser.add_argument("--ghidra-server", type=str, default=DEFAULT_GHIDRA_SERVER,

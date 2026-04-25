@@ -28,6 +28,8 @@ import ghidra.app.script.GhidraScript;
 import ghidra.app.script.GhidraScriptProvider;
 import ghidra.app.script.GhidraScriptUtil;
 import ghidra.app.script.GhidraState;
+import ghidra.app.services.AutoAnalysisManager;
+import ghidra.app.services.Analyzer;
 import ghidra.program.model.symbol.SourceType;
 import ghidra.program.model.listing.LocalVariableImpl;
 import ghidra.program.model.listing.ParameterImpl;
@@ -414,6 +416,19 @@ public class GhidraMCPPlugin extends Plugin {
 
         server.createContext("/list_scripts", exchange -> {
             sendResponse(exchange, listScripts());
+        });
+
+        server.createContext("/run_auto_analysis", exchange -> {
+            sendResponse(exchange, runAutoAnalysis());
+        });
+
+        server.createContext("/list_analyzers", exchange -> {
+            sendResponse(exchange, listAnalyzers());
+        });
+
+        server.createContext("/run_specific_analyzers", exchange -> {
+            Map<String, String> params = parsePostParams(exchange);
+            sendResponse(exchange, runSpecificAnalyzers(params.get("analyzers")));
         });
 
         server.setExecutor(null);
@@ -1821,6 +1836,128 @@ public class GhidraMCPPlugin extends Plugin {
         }
         Collections.sort(lines);
         return String.join("\n", lines);
+    }
+
+    private String runAutoAnalysis() {
+        Program program = getCurrentProgram();
+        if (program == null) return "Error: no program loaded";
+
+        final StringBuilder output = new StringBuilder();
+        final AtomicBoolean success = new AtomicBoolean(false);
+
+        try {
+            SwingUtilities.invokeAndWait(() -> {
+                int tx = program.startTransaction("Auto analysis");
+                try {
+                    ghidra.app.services.AutoAnalysisManager mgr =
+                        ghidra.app.services.AutoAnalysisManager.getAnalysisManager(program);
+                    mgr.initializeOptions();
+                    mgr.startAnalysis(new ConsoleTaskMonitor());
+                    success.set(true);
+                    output.append("OK: auto analysis started");
+                } catch (Exception e) {
+                    output.append("Error: ").append(e.getMessage());
+                    Msg.error(this, "Auto analysis error", e);
+                } finally {
+                    program.endTransaction(tx, success.get());
+                }
+            });
+        } catch (InterruptedException | InvocationTargetException e) {
+            return "Error: " + e.getMessage();
+        }
+        return output.toString();
+    }
+
+    private String listAnalyzers() {
+        Program program = getCurrentProgram();
+        if (program == null) return "Error: no program loaded";
+
+        try {
+            ghidra.app.services.AutoAnalysisManager mgr =
+                ghidra.app.services.AutoAnalysisManager.getAnalysisManager(program);
+
+            List<String> lines = new ArrayList<>();
+            for (ghidra.app.plugin.core.analysis.AutoAnalysisManager.AnalyzerScheduler scheduler 
+                    : mgr.getAnalyzerSchedulers()) {
+                ghidra.app.services.Analyzer analyzer = scheduler.getAnalyzer();
+                lines.add(String.format("[%s] %s  (%s)",
+                    scheduler.isEnabled() ? "ON " : "OFF",
+                    analyzer.getName(),
+                    analyzer.getAnalysisType().name()));
+            }
+            Collections.sort(lines);
+            return String.join("\n", lines);
+        } catch (Exception e) {
+            return "Error: " + e.getMessage();
+        }
+    }
+
+    private String runSpecificAnalyzers(String analyzersJson) {
+        Program program = getCurrentProgram();
+        if (program == null) return "Error: no program loaded";
+        if (analyzersJson == null) return "Error: analyzers list required";
+
+        // Parse JSON array
+        analyzersJson = analyzersJson.trim();
+        if (analyzersJson.startsWith("[")) {
+            analyzersJson = analyzersJson.substring(1);
+        }
+        if (analyzersJson.endsWith("]")) {
+            analyzersJson = analyzersJson.substring(0, analyzersJson.length() - 1);
+        }
+        List<String> requestedNames = new ArrayList<>();
+        for (String part : analyzersJson.split(",")) {
+            String name = part.trim().replaceAll("^\"|\"$", "");
+            if (!name.isEmpty()) requestedNames.add(name);
+        }
+
+        if (requestedNames.isEmpty()) return "Error: no analyzer names provided";
+
+        final StringBuilder output = new StringBuilder();
+        final AtomicBoolean success = new AtomicBoolean(false);
+        final List<String> requested = requestedNames;
+
+        try {
+            SwingUtilities.invokeAndWait(() -> {
+                int tx = program.startTransaction("Run specific analyzers");
+                try {
+                    ghidra.app.services.AutoAnalysisManager mgr =
+                        ghidra.app.services.AutoAnalysisManager.getAnalysisManager(program);
+
+                    List<String> ran = new ArrayList<>();
+                    List<String> notFound = new ArrayList<>();
+
+                    for (ghidra.app.plugin.core.analysis.AutoAnalysisManager.AnalyzerScheduler scheduler
+                            : mgr.getAnalyzerSchedulers()) {
+                        ghidra.app.services.Analyzer analyzer = scheduler.getAnalyzer();
+                        if (requested.contains(analyzer.getName())) {
+                            scheduler.setEnabled(true);
+                            ran.add(analyzer.getName());
+                        }
+                    }
+
+                    for (String name : requested) {
+                        if (!ran.contains(name)) notFound.add(name);
+                    }
+
+                    mgr.startAnalysis(new ConsoleTaskMonitor());
+                    success.set(true);
+
+                    output.append("OK: started analyzers: ").append(String.join(", ", ran));
+                    if (!notFound.isEmpty()) {
+                        output.append("\nNot found: ").append(String.join(", ", notFound));
+                    }
+                } catch (Exception e) {
+                    output.append("Error: ").append(e.getMessage());
+                    Msg.error(this, "Analyzer error", e);
+                } finally {
+                    program.endTransaction(tx, success.get());
+                }
+            });
+        } catch (InterruptedException | InvocationTargetException e) {
+            return "Error: " + e.getMessage();
+        }
+        return output.toString();
     }
 
     private ghidra.program.util.ProgramLocation getCurrentLocationFromTool() {
