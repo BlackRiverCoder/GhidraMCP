@@ -1783,25 +1783,8 @@ public class GhidraMCPPlugin extends Plugin {
 
                     int tx = program.startTransaction("Run script: " + name);
                     try {
-                        // Zachyť System.out počas behu skriptu
-                        java.io.PrintStream oldOut = System.out;
-                        java.io.PrintStream oldErr = System.err;
-                        java.io.ByteArrayOutputStream baos = new java.io.ByteArrayOutputStream();
-                        java.io.PrintStream capture = new java.io.PrintStream(baos, true, StandardCharsets.UTF_8);
-                        System.setOut(capture);
-                        System.setErr(capture);
-                        try {
-                            script.execute(state, new ConsoleTaskMonitor(), writer);
-                            success.set(true);
-                        } finally {
-                            System.setOut(oldOut);
-                            System.setErr(oldErr);
-                        }
-                        writer.flush();
-                        String captured = baos.toString(StandardCharsets.UTF_8);
-                        String writerOut = sw.toString();
-                        output.append(captured);
-                        if (!writerOut.isEmpty()) output.append(writerOut);
+                        script.execute(state, new ConsoleTaskMonitor(), writer);
+                        success.set(true);
                     } finally {
                         program.endTransaction(tx, success.get());
                     }
