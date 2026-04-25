@@ -405,6 +405,44 @@ def rebase_program(new_image_base: str) -> str:
     """
     return safe_post("rebase_program", {"newBase": new_image_base})
 
+@mcp.tool()
+def save_ghidra_script(script_name: str, script_code: str) -> str:
+    """
+    Save a Ghidra script to the user scripts directory so it can be run.
+    The script can be Java (.java) or Python/Jython (.py).
+    Script name must end with .java or .py.
+    
+    Args:
+        script_name: Filename e.g. "AnalyzeStrings.java" or "fix_offsets.py"
+        script_code: Full source code of the script
+    """
+    import urllib.parse
+    return safe_post("save_script", {
+        "name": script_name,
+        "code": script_code
+    })
+
+@mcp.tool()
+def run_ghidra_script(script_name: str, script_args: str = "") -> str:
+    """
+    Run a previously saved Ghidra script by name and return its output.
+    
+    Args:
+        script_name: Filename e.g. "AnalyzeStrings.java"
+        script_args: Optional arguments passed to the script (space separated)
+    """
+    return safe_post("run_script", {
+        "name": script_name,
+        "args": script_args
+    })
+
+@mcp.tool()
+def list_ghidra_scripts() -> list:
+    """
+    List all available Ghidra scripts in the user scripts directory.
+    """
+    return safe_get("list_scripts")
+
 def main():
     parser = argparse.ArgumentParser(description="MCP server for Ghidra")
     parser.add_argument("--ghidra-server", type=str, default=DEFAULT_GHIDRA_SERVER,

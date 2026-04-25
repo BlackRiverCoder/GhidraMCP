@@ -24,6 +24,10 @@ import ghidra.app.services.CodeViewerService;
 import ghidra.app.services.ProgramManager;
 import ghidra.app.util.PseudoDisassembler;
 import ghidra.app.cmd.function.SetVariableNameCmd;
+import ghidra.app.script.GhidraScript;
+import ghidra.app.script.GhidraScriptProvider;
+import ghidra.app.script.GhidraScriptUtil;
+import ghidra.app.script.GhidraState;
 import ghidra.program.model.symbol.SourceType;
 import ghidra.program.model.listing.LocalVariableImpl;
 import ghidra.program.model.listing.ParameterImpl;
@@ -394,6 +398,20 @@ public class GhidraMCPPlugin extends Plugin {
         server.createContext("/rebase_program", exchange -> {
             Map<String, String> params = parsePostParams(exchange);
             sendResponse(exchange, rebaseProgram(params.get("newBase")));
+        });
+
+        server.createContext("/save_script", exchange -> {
+            Map<String, String> params = parsePostParams(exchange);
+            sendResponse(exchange, saveScript(params.get("name"), params.get("code")));
+        });
+
+        server.createContext("/run_script", exchange -> {
+            Map<String, String> params = parsePostParams(exchange);
+            sendResponse(exchange, runScript(params.get("name"), params.get("args")));
+        });
+
+        server.createContext("/list_scripts", exchange -> {
+            sendResponse(exchange, listScripts());
         });
 
         server.setExecutor(null);
@@ -1689,6 +1707,137 @@ public class GhidraMCPPlugin extends Plugin {
         } catch (InterruptedException | InvocationTargetException e) {
             return "Error: " + e.getMessage();
         }
+    }
+
+    private String saveScript(String name, String code) {
+        if (name == null || name.isEmpty()) return "Error: script name required";
+        if (code == null || code.isEmpty()) return "Error: script code required";
+        if (!name.endsWith(".java") && !name.endsWith(".py")) {
+            return "Error: script name must end with .java or .py";
+        }
+
+        try {
+            // Ghidra user scripts directory
+            java.io.File scriptDir = new java.io.File(
+                System.getProperty("user.home") + "/ghidra_scripts");
+            if (!scriptDir.exists()) scriptDir.mkdirs();
+
+            java.io.File scriptFile = new java.io.File(scriptDir, name);
+            java.nio.file.Files.writeString(scriptFile.toPath(), code, 
+                StandardCharsets.UTF_8);
+
+            return "OK: saved script to " + scriptFile.getAbsolutePath();
+        } catch (Exception e) {
+            return "Error: " + e.getMessage();
+        }
+    }
+
+    private String runScript(String name, String args) {
+        if (name == null || name.isEmpty()) return "Error: script name required";
+
+        try {
+            java.io.File scriptDir = new java.io.File(
+                System.getProperty("user.home") + "/ghidra_scripts");
+            java.io.File scriptFile = new java.io.File(scriptDir, name);
+
+            if (!scriptFile.exists()) {
+                return "Error: script '" + name + "' not found in " + scriptDir.getAbsolutePath();
+            }
+
+            Program program = getCurrentProgram();
+            if (program == null) return "Error: no program loaded";
+
+            final StringBuilder output = new StringBuilder();
+            final AtomicBoolean success = new AtomicBoolean(false);
+
+            SwingUtilities.invokeAndWait(() -> {
+                try {
+                    // Load and run script via GhidraScriptUtil
+                    ghidra.app.script.GhidraScriptProvider provider =
+                        ghidra.app.script.GhidraScriptUtil.getProvider(scriptFile);
+
+                    if (provider == null) {
+                        output.append("Error: no script provider found for " + name);
+                        return;
+                    }
+
+                    java.io.PrintWriter writer = new java.io.PrintWriter(
+                        new java.io.StringWriter()) {
+                        @Override public void println(String x) { output.append(x).append("\n"); }
+                        @Override public void print(String x)   { output.append(x); }
+                    };
+
+                    ghidra.app.script.GhidraScript script = provider.getScriptInstance(
+                        scriptFile, writer);
+
+                    // Set up script state
+                    ghidra.framework.plugintool.PluginTool scriptTool = tool;
+                    ghidra.app.plugin.core.script.GhidraScriptMgrPlugin scriptMgr =
+                        tool.getService(ghidra.app.plugin.core.script.GhidraScriptMgrPlugin.class);
+
+                    script.set(
+                        new ghidra.app.script.GhidraState(
+                            tool,
+                            tool.getProject(),
+                            program,
+                            getCurrentLocationFromTool(),
+                            null,
+                            null
+                        ),
+                        new ConsoleTaskMonitor(),
+                        writer
+                    );
+
+                    // Parse args
+                    String[] argArray = (args != null && !args.isEmpty()) 
+                        ? args.split(" ") : new String[0];
+                    script.setScriptArgs(argArray);
+
+                    int tx = program.startTransaction("Run script: " + name);
+                    try {
+                        script.execute();
+                        success.set(true);
+                    } finally {
+                        program.endTransaction(tx, success.get());
+                    }
+
+                } catch (Exception e) {
+                    output.append("Error running script: ").append(e.getMessage());
+                    Msg.error(this, "Script execution error", e);
+                }
+            });
+
+            String result = output.toString();
+            return (result.isEmpty() ? "Script completed with no output" : result);
+
+        } catch (Exception e) {
+            return "Error: " + e.getMessage();
+        }
+    }
+
+    private String listScripts() {
+        java.io.File scriptDir = new java.io.File(
+            System.getProperty("user.home") + "/ghidra_scripts");
+        if (!scriptDir.exists()) return "No scripts directory found at " + scriptDir.getAbsolutePath();
+
+        java.io.File[] files = scriptDir.listFiles((dir, n) -> 
+            n.endsWith(".java") || n.endsWith(".py"));
+        if (files == null || files.length == 0) return "No scripts found";
+
+        List<String> lines = new ArrayList<>();
+        for (java.io.File f : files) {
+            lines.add(String.format("%-40s  %d bytes", f.getName(), f.length()));
+        }
+        Collections.sort(lines);
+        return String.join("\n", lines);
+    }
+
+    private ghidra.program.util.ProgramLocation getCurrentLocationFromTool() {
+        try {
+            CodeViewerService service = tool.getService(CodeViewerService.class);
+            if (service != null) return service.getCurrentLocation();
+        } catch (Exception e) { /* ignore */ }
+        return null;
     }
 
     /**
