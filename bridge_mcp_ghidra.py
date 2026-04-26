@@ -471,6 +471,99 @@ def run_specific_analyzers(analyzer_names: list) -> str:
     import json
     return safe_post("run_specific_analyzers", {"analyzers": json.dumps(analyzer_names)})
 
+@mcp.tool()
+def get_bytes(address: str, length: int = 16) -> str:
+    """
+    Get raw bytes at address as hex dump.
+    
+    Args:
+        address: Address in hex (e.g. "0x80000000")
+        length: Number of bytes to read (default 16)
+    """
+    return safe_get("get_bytes", {"address": address, "length": str(length)})
+
+@mcp.tool()
+def get_data_at(address: str) -> str:
+    """
+    Get data type and value at address as Ghidra sees it.
+    
+    Args:
+        address: Address in hex (e.g. "0x80000000")
+    """
+    return safe_get("get_data_at", {"address": address})
+
+@mcp.tool()
+def get_instruction_at(address: str) -> str:
+    """
+    Get the disassembled instruction at a specific address.
+    
+    Args:
+        address: Address in hex (e.g. "0x80000000")
+    """
+    return safe_get("get_instruction_at", {"address": address})
+
+@mcp.tool()
+def create_data(address: str, data_type: str) -> str:
+    """
+    Define data type at address.
+    
+    Args:
+        address: Address in hex (e.g. "0x80000000")
+        data_type: Type name: "byte", "word", "dword", "qword", "float", "double", "char", "string", "pointer"
+    """
+    return safe_post("create_data", {"address": address, "dataType": data_type})
+
+@mcp.tool()
+def create_function(address: str) -> str:
+    """
+    Create a function at address (equivalent to pressing D in Ghidra).
+    Useful for TriCore code after RET+NOP where Ghidra misses functions.
+    
+    Args:
+        address: Address in hex (e.g. "0x80000000")
+    """
+    return safe_post("create_function", {"address": address})
+
+@mcp.tool()
+def add_bookmark(address: str, category: str = "Analysis", note: str = "") -> str:
+    """
+    Add a bookmark at address with category and note.
+    
+    Args:
+        address: Address in hex (e.g. "0x80000000")
+        category: Bookmark category (e.g. "Analysis", "Todo", "Interest")
+        note: Bookmark note/description
+    """
+    return safe_post("add_bookmark", {"address": address, "category": category, "note": note})
+
+@mcp.tool()
+def list_bookmarks(category: str = "") -> str:
+    """
+    List all bookmarks, optionally filtered by category.
+    
+    Args:
+        category: Filter by category (empty = all bookmarks)
+    """
+    return safe_get("list_bookmarks", {"category": category})
+
+@mcp.tool()
+def find_pattern(pattern: str, start_address: str = "", end_address: str = "", max_results: int = 50) -> str:
+    """
+    Find byte pattern in memory. Useful for finding RET+NOP, function prologues etc.
+    
+    Args:
+        pattern: Hex bytes separated by spaces, use ?? for wildcard (e.g. "00 90" or "?? 00 80")
+        start_address: Start search from this address (empty = start of program)
+        end_address: Stop search at this address (empty = end of program)
+        max_results: Maximum number of results to return (default 50)
+    """
+    return safe_get("find_pattern", {
+        "pattern": pattern,
+        "start": start_address,
+        "end": end_address,
+        "maxResults": str(max_results)
+    })
+
 def main():
     parser = argparse.ArgumentParser(description="MCP server for Ghidra")
     parser.add_argument("--ghidra-server", type=str, default=DEFAULT_GHIDRA_SERVER,

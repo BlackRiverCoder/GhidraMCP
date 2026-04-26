@@ -52,6 +52,11 @@ import ghidra.framework.options.Options;
 
 import ghidra.program.model.listing.Program;
 
+import ghidra.app.cmd.disassemble.DisassembleCommand;
+import ghidra.app.cmd.function.CreateFunctionCmd;
+import ghidra.program.model.listing.Bookmark;
+import ghidra.program.model.listing.BookmarkManager;
+
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 
@@ -429,6 +434,50 @@ public class GhidraMCPPlugin extends Plugin {
         server.createContext("/run_specific_analyzers", exchange -> {
             Map<String, String> params = parsePostParams(exchange);
             sendResponse(exchange, runSpecificAnalyzers(params.get("analyzers")));
+        });
+
+        server.createContext("/get_bytes", exchange -> {
+            Map<String, String> qparams = parseQueryParams(exchange);
+            sendResponse(exchange, getBytes(qparams.get("address"), qparams.get("length")));
+        });
+
+        server.createContext("/get_data_at", exchange -> {
+            Map<String, String> qparams = parseQueryParams(exchange);
+            sendResponse(exchange, getDataAt(qparams.get("address")));
+        });
+
+        server.createContext("/get_instruction_at", exchange -> {
+            Map<String, String> qparams = parseQueryParams(exchange);
+            sendResponse(exchange, getInstructionAt(qparams.get("address")));
+        });
+
+        server.createContext("/create_data", exchange -> {
+            Map<String, String> params = parsePostParams(exchange);
+            sendResponse(exchange, createDataAtAddress(params.get("address"), params.get("dataType")));
+        });
+
+        server.createContext("/create_function", exchange -> {
+            Map<String, String> params = parsePostParams(exchange);
+            sendResponse(exchange, createFunctionAtAddress(params.get("address")));
+        });
+
+        server.createContext("/add_bookmark", exchange -> {
+            Map<String, String> params = parsePostParams(exchange);
+            sendResponse(exchange, addBookmark(params.get("address"), params.get("category"), params.get("note")));
+        });
+
+        server.createContext("/list_bookmarks", exchange -> {
+            Map<String, String> qparams = parseQueryParams(exchange);
+            sendResponse(exchange, listBookmarks(qparams.get("category")));
+        });
+
+        server.createContext("/find_pattern", exchange -> {
+            Map<String, String> qparams = parseQueryParams(exchange);
+            sendResponse(exchange, findPattern(
+                qparams.get("pattern"),
+                qparams.get("start"),
+                qparams.get("end"),
+                qparams.get("maxResults")));
         });
 
         server.setExecutor(null);
@@ -1956,6 +2005,342 @@ public class GhidraMCPPlugin extends Plugin {
             return "Error: " + e.getMessage();
         }
         return output.toString();
+    }
+
+    private String getBytes(String addressStr, String lengthStr) {
+        Program program = getCurrentProgram();
+        if (program == null) return "Error: no program loaded";
+        if (addressStr == null) return "Error: address required";
+
+        try {
+            Address addr = program.getAddressFactory().getAddress(addressStr);
+            int length = parseIntOrDefault(lengthStr, 16);
+            length = Math.min(length, 1024); // max 1KB
+
+            byte[] bytes = new byte[length];
+            program.getMemory().getBytes(addr, bytes);
+
+            StringBuilder sb = new StringBuilder();
+            sb.append(String.format("Address: %s\n", addr));
+            sb.append("Hex:     ");
+            for (int i = 0; i < bytes.length; i++) {
+                if (i > 0 && i % 16 == 0) sb.append("\n         ");
+                sb.append(String.format("%02X ", bytes[i] & 0xFF));
+            }
+            sb.append("\nASCII:   ");
+            for (byte b : bytes) {
+                char c = (char)(b & 0xFF);
+                sb.append((c >= 32 && c < 127) ? c : '.');
+            }
+            return sb.toString();
+        } catch (Exception e) {
+            return "Error: " + e.getMessage();
+        }
+    }
+
+    private String getDataAt(String addressStr) {
+        Program program = getCurrentProgram();
+        if (program == null) return "Error: no program loaded";
+        if (addressStr == null) return "Error: address required";
+
+        try {
+            Address addr = program.getAddressFactory().getAddress(addressStr);
+            Listing listing = program.getListing();
+
+            StringBuilder sb = new StringBuilder();
+            sb.append("Address: ").append(addr).append("\n");
+
+            // Symbol
+            Symbol sym = program.getSymbolTable().getPrimarySymbol(addr);
+            if (sym != null) sb.append("Symbol:  ").append(sym.getName()).append("\n");
+
+            // Data
+            Data data = listing.getDataAt(addr);
+            if (data != null) {
+                sb.append("Type:    ").append(data.getDataType().getName()).append("\n");
+                sb.append("Size:    ").append(data.getLength()).append(" bytes\n");
+                sb.append("Value:   ").append(data.getDefaultValueRepresentation()).append("\n");
+            }
+
+            // Instruction
+            Instruction instr = listing.getInstructionAt(addr);
+            if (instr != null) {
+                sb.append("Instr:   ").append(instr.toString()).append("\n");
+            }
+
+            // Function
+            Function func = program.getFunctionManager().getFunctionAt(addr);
+            if (func != null) {
+                sb.append("Function: ").append(func.getName())
+                .append(" @ ").append(func.getEntryPoint()).append("\n");
+            }
+
+            if (data == null && instr == null && func == null && sym == null) {
+                sb.append("(undefined)\n");
+            }
+
+            return sb.toString();
+        } catch (Exception e) {
+            return "Error: " + e.getMessage();
+        }
+    }
+
+    private String getInstructionAt(String addressStr) {
+        Program program = getCurrentProgram();
+        if (program == null) return "Error: no program loaded";
+        if (addressStr == null) return "Error: address required";
+
+        try {
+            Address addr = program.getAddressFactory().getAddress(addressStr);
+            Instruction instr = program.getListing().getInstructionAt(addr);
+            if (instr == null) return "No instruction at " + addressStr;
+
+            StringBuilder sb = new StringBuilder();
+            sb.append(String.format("Address:  %s\n", addr));
+            sb.append(String.format("Instr:    %s\n", instr.toString()));
+            sb.append(String.format("Bytes:    "));
+            for (byte b : instr.getBytes()) {
+                sb.append(String.format("%02X ", b & 0xFF));
+            }
+            sb.append("\n");
+            sb.append(String.format("Length:   %d bytes\n", instr.getLength()));
+
+            String comment = program.getListing().getComment(CodeUnit.EOL_COMMENT, addr);
+            if (comment != null) sb.append("Comment:  ").append(comment).append("\n");
+
+            return sb.toString();
+        } catch (Exception e) {
+            return "Error: " + e.getMessage();
+        }
+    }
+
+    private String createDataAtAddress(String addressStr, String dataTypeName) {
+        Program program = getCurrentProgram();
+        if (program == null) return "Error: no program loaded";
+        if (addressStr == null || dataTypeName == null) return "Error: address and dataType required";
+
+        try {
+            Address addr = program.getAddressFactory().getAddress(addressStr);
+            DataTypeManager dtm = program.getDataTypeManager();
+
+            DataType dt;
+            switch (dataTypeName.toLowerCase()) {
+                case "byte":    dt = dtm.getDataType("/byte"); break;
+                case "word":    dt = dtm.getDataType("/word"); break;
+                case "dword":   dt = dtm.getDataType("/dword"); break;
+                case "qword":   dt = dtm.getDataType("/qword"); break;
+                case "float":   dt = dtm.getDataType("/float"); break;
+                case "double":  dt = dtm.getDataType("/double"); break;
+                case "char":    dt = dtm.getDataType("/char"); break;
+                case "pointer": dt = new PointerDataType(dtm); break;
+                case "string":
+                    dt = dtm.getDataType("/string");
+                    if (dt == null) dt = dtm.getDataType("/TerminatedCString");
+                    break;
+                default:
+                    dt = findDataTypeByNameInAllCategories(dtm, dataTypeName);
+                    if (dt == null) return "Error: unknown data type '" + dataTypeName + "'";
+            }
+
+            final DataType finalDt = dt;
+            AtomicBoolean success = new AtomicBoolean(false);
+            final String[] result = {""};
+
+            SwingUtilities.invokeAndWait(() -> {
+                int tx = program.startTransaction("Create data");
+                try {
+                    program.getListing().clearCodeUnits(addr, addr.add(finalDt.getLength() - 1), false);
+                    program.getListing().createData(addr, finalDt);
+                    success.set(true);
+                    result[0] = "OK: created " + dataTypeName + " at " + addressStr;
+                } catch (Exception e) {
+                    result[0] = "Error: " + e.getMessage();
+                    Msg.error(this, "Error creating data", e);
+                } finally {
+                    program.endTransaction(tx, success.get());
+                }
+            });
+            return result[0];
+        } catch (Exception e) {
+            return "Error: " + e.getMessage();
+        }
+    }
+
+    private String createFunctionAtAddress(String addressStr) {
+        Program program = getCurrentProgram();
+        if (program == null) return "Error: no program loaded";
+        if (addressStr == null) return "Error: address required";
+
+        try {
+            Address addr = program.getAddressFactory().getAddress(addressStr);
+            AtomicBoolean success = new AtomicBoolean(false);
+            final String[] result = {""};
+
+            SwingUtilities.invokeAndWait(() -> {
+                int tx = program.startTransaction("Create function");
+                try {
+                    // Najprv disassembluj ak treba
+                    ghidra.app.util.PseudoDisassembler pd =
+                        new ghidra.app.util.PseudoDisassembler(program);
+
+                    ghidra.app.cmd.disassemble.DisassembleCommand disCmd =
+                        new ghidra.app.cmd.disassemble.DisassembleCommand(addr, null, true);
+                    disCmd.applyTo(program, TaskMonitor.DUMMY);
+
+                    // Vytvor funkciu
+                    ghidra.app.cmd.function.CreateFunctionCmd cmd =
+                        new ghidra.app.cmd.function.CreateFunctionCmd(addr);
+                    boolean ok = cmd.applyTo(program, TaskMonitor.DUMMY);
+
+                    if (ok) {
+                        Function func = program.getFunctionManager().getFunctionAt(addr);
+                        success.set(true);
+                        result[0] = "OK: created function '" +
+                            (func != null ? func.getName() : "unknown") +
+                            "' at " + addressStr;
+                    } else {
+                        result[0] = "Error: " + cmd.getStatusMsg();
+                    }
+                } catch (Exception e) {
+                    result[0] = "Error: " + e.getMessage();
+                    Msg.error(this, "Error creating function", e);
+                } finally {
+                    program.endTransaction(tx, success.get());
+                }
+            });
+            return result[0];
+        } catch (Exception e) {
+            return "Error: " + e.getMessage();
+        }
+    }
+
+    private String addBookmark(String addressStr, String category, String note) {
+        Program program = getCurrentProgram();
+        if (program == null) return "Error: no program loaded";
+        if (addressStr == null) return "Error: address required";
+
+        try {
+            Address addr = program.getAddressFactory().getAddress(addressStr);
+            AtomicBoolean success = new AtomicBoolean(false);
+
+            SwingUtilities.invokeAndWait(() -> {
+                int tx = program.startTransaction("Add bookmark");
+                try {
+                    program.getBookmarkManager().setBookmark(
+                        addr,
+                        category != null ? category : "Analysis",
+                        category != null ? category : "Analysis",
+                        note != null ? note : "");
+                    success.set(true);
+                } catch (Exception e) {
+                    Msg.error(this, "Error adding bookmark", e);
+                } finally {
+                    program.endTransaction(tx, success.get());
+                }
+            });
+            return success.get() ? "OK: bookmark added at " + addressStr : "Failed to add bookmark";
+        } catch (Exception e) {
+            return "Error: " + e.getMessage();
+        }
+    }
+
+    private String listBookmarks(String category) {
+        Program program = getCurrentProgram();
+        if (program == null) return "Error: no program loaded";
+
+        try {
+            List<String> lines = new ArrayList<>();
+            ghidra.program.model.listing.BookmarkManager bm = program.getBookmarkManager();
+
+            Iterator<ghidra.program.model.listing.Bookmark> it =
+                (category != null && !category.isEmpty())
+                    ? bm.getBookmarksIterator(category)
+                    : bm.getBookmarksIterator();
+
+            while (it.hasNext()) {
+                ghidra.program.model.listing.Bookmark b = it.next();
+                lines.add(String.format("%s  [%s]  %s",
+                    b.getAddress(), b.getCategory(), b.getComment()));
+            }
+
+            if (lines.isEmpty()) return "No bookmarks found";
+            Collections.sort(lines);
+            return String.join("\n", lines);
+        } catch (Exception e) {
+            return "Error: " + e.getMessage();
+        }
+    }
+
+    private String findPattern(String pattern, String startStr, String endStr, String maxResultsStr) {
+        Program program = getCurrentProgram();
+        if (program == null) return "Error: no program loaded";
+        if (pattern == null || pattern.isEmpty()) return "Error: pattern required";
+
+        try {
+            // Parse pattern — podporuje ?? ako wildcard
+            String[] parts = pattern.trim().split("\\s+");
+            byte[] bytes = new byte[parts.length];
+            byte[] masks = new byte[parts.length];
+
+            for (int i = 0; i < parts.length; i++) {
+                if (parts[i].equals("??")) {
+                    bytes[i] = 0x00;
+                    masks[i] = 0x00;
+                } else {
+                    bytes[i] = (byte) Integer.parseInt(parts[i], 16);
+                    masks[i] = (byte) 0xFF;
+                }
+            }
+
+            int maxResults = parseIntOrDefault(maxResultsStr, 50);
+
+            Address startAddr = (startStr != null && !startStr.isEmpty())
+                ? program.getAddressFactory().getAddress(startStr)
+                : program.getMinAddress();
+            Address endAddr = (endStr != null && !endStr.isEmpty())
+                ? program.getAddressFactory().getAddress(endStr)
+                : program.getMaxAddress();
+
+            List<String> results = new ArrayList<>();
+            ghidra.program.model.address.AddressSet searchSet =
+                new ghidra.program.model.address.AddressSet(startAddr, endAddr);
+
+            ghidra.util.search.memory.MemSearcherAlgorithm searcher =
+                new ghidra.util.search.memory.MaskedByteSequenceSearchAlgorithm(
+                    bytes, masks);
+
+            // Použi Memory.findBytes
+            Address found = startAddr;
+            int count = 0;
+            while (count < maxResults) {
+                found = program.getMemory().findBytes(found, endAddr, bytes, masks, true, TaskMonitor.DUMMY);
+                if (found == null) break;
+
+                String label = "";
+                Symbol sym = program.getSymbolTable().getPrimarySymbol(found);
+                if (sym != null) label = " (" + sym.getName() + ")";
+
+                Function func = program.getFunctionManager().getFunctionContaining(found);
+                if (func != null) label += " in " + func.getName();
+
+                results.add(String.format("%s%s", found, label));
+                count++;
+
+                // Posuň sa za nájdenú sekvenciu
+                try {
+                    found = found.add(1);
+                } catch (Exception e) {
+                    break;
+                }
+            }
+
+            if (results.isEmpty()) return "Pattern not found: " + pattern;
+            return String.format("Found %d match(es) for pattern [%s]:\n%s",
+                results.size(), pattern, String.join("\n", results));
+
+        } catch (Exception e) {
+            return "Error: " + e.getMessage();
+        }
     }
 
     private ghidra.program.util.ProgramLocation getCurrentLocationFromTool() {
