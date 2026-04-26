@@ -2125,18 +2125,16 @@ public class GhidraMCPPlugin extends Plugin {
 
             DataType dt;
             switch (dataTypeName.toLowerCase()) {
-                case "byte":    dt = dtm.getDataType("/byte"); break;
-                case "word":    dt = dtm.getDataType("/word"); break;
-                case "dword":   dt = dtm.getDataType("/dword"); break;
-                case "qword":   dt = dtm.getDataType("/qword"); break;
-                case "float":   dt = dtm.getDataType("/float"); break;
-                case "double":  dt = dtm.getDataType("/double"); break;
-                case "char":    dt = dtm.getDataType("/char"); break;
-                case "pointer": dt = new PointerDataType(dtm); break;
-                case "string":
-                    dt = dtm.getDataType("/string");
-                    if (dt == null) dt = dtm.getDataType("/TerminatedCString");
-                    break;
+                case "byte":
+                case "undefined1": dt = dtm.getDataType("/undefined1"); break;
+                case "word":
+                case "undefined2": dt = dtm.getDataType("/undefined2"); break;
+                case "dword":
+                case "undefined4": dt = dtm.getDataType("/undefined4"); break;
+                case "pointer":    dt = dtm.getDataType("/pointer"); break;
+                case "string":     dt = dtm.getDataType("/string"); break;
+                case "unicode":    dt = dtm.getDataType("/unicode"); break;
+                case "ushort":     dt = dtm.getDataType("/ushort"); break;
                 default:
                     dt = findDataTypeByNameInAllCategories(dtm, dataTypeName);
                     if (dt == null) return "Error: unknown data type '" + dataTypeName + "'";
