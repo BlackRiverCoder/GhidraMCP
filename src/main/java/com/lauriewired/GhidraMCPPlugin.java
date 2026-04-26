@@ -2305,10 +2305,6 @@ public class GhidraMCPPlugin extends Plugin {
             ghidra.program.model.address.AddressSet searchSet =
                 new ghidra.program.model.address.AddressSet(startAddr, endAddr);
 
-            ghidra.util.search.memory.MemSearcherAlgorithm searcher =
-                new ghidra.util.search.memory.MaskedByteSequenceSearchAlgorithm(
-                    bytes, masks);
-
             // Použi Memory.findBytes
             Address found = startAddr;
             int count = 0;
