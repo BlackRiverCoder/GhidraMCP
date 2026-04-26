@@ -41,6 +41,13 @@ def safe_get(endpoint: str, params: dict = None) -> list:
             return [f"Error {response.status_code}: {response.text.strip()}"]
     except Exception as e:
         return [f"Request failed: {str(e)}"]
+    
+def safe_get_str(path, params=None):
+    """Like safe_get but always returns a string."""
+    result = safe_get(path, params)
+    if isinstance(result, list):
+        return "\n".join(result)
+    return str(result) if result is not None else ""
 
 def safe_post(endpoint: str, data: dict | str) -> str:
     try:
@@ -480,7 +487,7 @@ def get_bytes(address: str, length: int = 16) -> str:
         address: Address in hex (e.g. "0x80000000")
         length: Number of bytes to read (default 16)
     """
-    return safe_get("get_bytes", {"address": address, "length": str(length)})
+    return safe_get_str("get_bytes", {"address": address, "length": str(length)})
 
 @mcp.tool()
 def get_data_at(address: str) -> str:
@@ -490,7 +497,7 @@ def get_data_at(address: str) -> str:
     Args:
         address: Address in hex (e.g. "0x80000000")
     """
-    return safe_get("get_data_at", {"address": address})
+    return safe_get_str("get_data_at", {"address": address})
 
 @mcp.tool()
 def get_instruction_at(address: str) -> str:
@@ -500,7 +507,7 @@ def get_instruction_at(address: str) -> str:
     Args:
         address: Address in hex (e.g. "0x80000000")
     """
-    return safe_get("get_instruction_at", {"address": address})
+    return safe_get_str("get_instruction_at", {"address": address})
 
 @mcp.tool()
 def create_data(address: str, data_type: str) -> str:
@@ -544,7 +551,7 @@ def list_bookmarks(category: str = "") -> str:
     Args:
         category: Filter by category (empty = all bookmarks)
     """
-    return safe_get("list_bookmarks", {"category": category})
+    return safe_get_str("list_bookmarks", {"category": category})
 
 @mcp.tool()
 def find_pattern(pattern: str, start_address: str = "", end_address: str = "", max_results: int = 50) -> str:
@@ -557,7 +564,7 @@ def find_pattern(pattern: str, start_address: str = "", end_address: str = "", m
         end_address: Stop search at this address (empty = end of program)
         max_results: Maximum number of results to return (default 50)
     """
-    return safe_get("find_pattern", {
+    return safe_get_str("find_pattern", {
         "pattern": pattern,
         "start": start_address,
         "end": end_address,
